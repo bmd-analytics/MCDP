@@ -123,20 +123,18 @@
             return address;
         }
 
-        // Function to geocode address using AllOrigins CORS proxy with city/state/ZIP fallback
+        // Function to geocode address using Nominatim directly with city/state/ZIP fallback
         async function geocodeWithProxy(address) {
-            const nominatimUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}`;
-            const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(nominatimUrl)}`;
-            
             try {
-                // Try original address first
-                const response = await fetch(proxyUrl);
+                // Try original address first with Michigan-specific search
+                const nominatimUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&countrycodes=us&state=Michigan`;
+                const response = await fetch(nominatimUrl);
+                
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}`);
                 }
                 
-                const data = await response.json();
-                const results = JSON.parse(data.contents);
+                const results = await response.json();
                 
                 if (results && results.length > 0) {
                     return {
@@ -151,18 +149,16 @@
                 const fallbackAddress = extractCityStateZip(address);
                 
                 if (fallbackAddress !== address) {
-                    await new Promise(resolve => setTimeout(resolve, 500)); // Small delay
+                    await new Promise(resolve => setTimeout(resolve, 1500)); // 1.5 second delay
                     
-                    const fallbackUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(fallbackAddress)}`;
-                    const fallbackProxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(fallbackUrl)}`;
+                    const fallbackUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(fallbackAddress)}&countrycodes=us&state=Michigan`;
+                    const fallbackResponse = await fetch(fallbackUrl);
                     
-                    const fallbackResponse = await fetch(fallbackProxyUrl);
                     if (!fallbackResponse.ok) {
                         throw new Error(`Fallback HTTP ${fallbackResponse.status}`);
                     }
                     
-                    const fallbackData = await fallbackResponse.json();
-                    const fallbackResults = JSON.parse(fallbackData.contents);
+                    const fallbackResults = await fallbackResponse.json();
                     
                     if (fallbackResults && fallbackResults.length > 0) {
                         debugLog(`  └─ Found using fallback: "${fallbackAddress}"`);
@@ -330,9 +326,9 @@
                         }
                         successCount++;
                         
-                        // Small delay between requests to be respectful
+                        // Delay between requests to respect Nominatim's rate limit (1 request per second)
                         if (i < radiusTargets.length - 1) {
-                            await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second delay
+                            await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay
                         }
                         
                     } catch (error) {
