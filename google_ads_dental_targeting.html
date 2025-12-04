@@ -81,7 +81,7 @@
     <script>
         // CONFIGURATION - Replace with your LocationIQ API key
         // Get free key at: https://locationiq.com/ (5,000 requests/day free tier)
-        const LOCATIONIQ_API_KEY = 'pk.358098a68d38877064a347e670c88c90';
+        const LOCATIONIQ_API_KEY = 'YOUR_LOCATIONIQ_API_KEY';
         
         // You can also use Geoapify (3,000/day free): https://www.geoapify.com/
         // const GEOAPIFY_API_KEY = 'YOUR_GEOAPIFY_API_KEY';
@@ -294,11 +294,11 @@
                 }
                 
                 // Add radius circles
+                let successCount = 0;
+                let failCount = 0;
+                
                 if (radiusTargets.length > 0) {
                     debugLog(`Starting geocoding for ${radiusTargets.length} addresses...`);
-                    
-                    let successCount = 0;
-                    let failCount = 0;
                     
                     for (let i = 0; i < radiusTargets.length; i++) {
                         const target = radiusTargets[i];
