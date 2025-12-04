@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Michigan Dental Campaign Targeting</title>
+    <title>Google Ads Campaign Targeting Map</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
@@ -44,32 +44,66 @@
             padding: 10px;
             border-radius: 5px;
             font-size: 12px;
-            max-width: 300px;
-            max-height: 200px;
+            max-width: 350px;
+            max-height: 250px;
             overflow-y: auto;
             z-index: 1000;
+        }
+        .api-key-notice {
+            background: #fff3cd;
+            color: #856404;
+            padding: 10px;
+            border: 1px solid #ffeaa7;
+            border-radius: 5px;
+            margin-bottom: 10px;
+            font-size: 11px;
+        }
+        .api-key-notice a {
+            color: #0066cc;
+            text-decoration: underline;
         }
     </style>
 </head>
 <body>
-    <div id="loading" class="loading">Loading dental campaign data...</div>
-    <div id="debug" class="debug">Debug info will appear here...</div>
+    <div id="loading" class="loading">Loading campaign data...</div>
+    <div id="debug" class="debug">
+        <div class="api-key-notice">
+            <strong>Setup Required:</strong> Get your free API key at 
+            <a href="https://locationiq.com/" target="_blank">locationiq.com</a> 
+            (5,000 requests/day free) and replace 'YOUR_LOCATIONIQ_API_KEY' in the code.
+        </div>
+        Debug info will appear here...
+    </div>
     <div id="map"></div>
     
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
     <script>
+        // CONFIGURATION - Replace with your LocationIQ API key
+        // Get free key at: https://locationiq.com/ (5,000 requests/day free tier)
+        const LOCATIONIQ_API_KEY = 'pk.358098a68d38877064a347e670c88c90';
+        
+        // You can also use Geoapify (3,000/day free): https://www.geoapify.com/
+        // const GEOAPIFY_API_KEY = 'YOUR_GEOAPIFY_API_KEY';
+
         // Debug function
         function debugLog(message) {
             console.log(message);
             const debugDiv = document.getElementById('debug');
-            debugDiv.innerHTML += message + '<br>';
+            const noticeDiv = debugDiv.querySelector('.api-key-notice');
+            if (noticeDiv) {
+                debugDiv.insertAdjacentHTML('beforeend', message + '<br>');
+            } else {
+                debugDiv.innerHTML += message + '<br>';
+            }
             debugDiv.scrollTop = debugDiv.scrollHeight;
         }
 
         // Initialize map
         const map = L.map('map').setView([44.3, -84.5], 7);
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
 
         // Function to load and process CSV data
         async function loadCampaignData() {
@@ -105,87 +139,65 @@
             }
         }
 
-        // Function to extract city, state, ZIP from address for fallback geocoding
-        function extractCityStateZip(address) {
-            // Split by commas and get the last parts
-            const parts = address.split(',').map(part => part.trim());
+        // Geocode using LocationIQ (CORS-friendly, 5000 requests/day free)
+        async function geocodeLocationIQ(address) {
+            const url = `https://us1.locationiq.com/v1/search.php?key=${LOCATIONIQ_API_KEY}&q=${encodeURIComponent(address)}&format=json&countrycodes=us&limit=1`;
             
-            if (parts.length >= 2) {
-                // Get the last two parts (should be "City" and "State ZIP")
-                const city = parts[parts.length - 2];
-                const stateZip = parts[parts.length - 1];
-                
-                // Combine city, state, and ZIP
-                return `${city}, ${stateZip}`;
+            const response = await fetch(url);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
             
-            // If parsing fails, return the original address
-            return address;
+            const results = await response.json();
+            
+            if (results && results.length > 0) {
+                return {
+                    lat: parseFloat(results[0].lat),
+                    lon: parseFloat(results[0].lon),
+                    display_name: results[0].display_name
+                };
+            }
+            
+            throw new Error('No results found');
         }
 
-        // Function to geocode address using Nominatim with proper headers
-        async function geocodeWithProxy(address) {
+        // Alternative: Geocode using Geoapify (CORS-friendly, 3000 requests/day free)
+        async function geocodeGeoapify(address) {
+            const GEOAPIFY_API_KEY = 'YOUR_GEOAPIFY_API_KEY'; // Replace if using Geoapify
+            const url = `https://api.geoapify.com/v1/geocode/search?text=${encodeURIComponent(address)}&filter=countrycode:us&format=json&apiKey=${GEOAPIFY_API_KEY}`;
+            
+            const response = await fetch(url);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            const data = await response.json();
+            
+            if (data.results && data.results.length > 0) {
+                return {
+                    lat: data.results[0].lat,
+                    lon: data.results[0].lon,
+                    display_name: data.results[0].formatted
+                };
+            }
+            
+            throw new Error('No results found');
+        }
+
+        // Main geocoding function with fallback
+        async function geocodeAddress(address) {
             try {
-                // CRITICAL FIX: Add User-Agent header requirement for Nominatim
-                const nominatimUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&countrycodes=us&state=Michigan`;
-                
-                const response = await fetch(nominatimUrl, {
-                    headers: {
-                        'User-Agent': 'MichiganDentalCampaign/1.0 (Google Ads Targeting Map)',
-                        'Accept': 'application/json'
-                    }
-                });
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
+                // Try primary service (LocationIQ)
+                if (LOCATIONIQ_API_KEY && LOCATIONIQ_API_KEY !== 'YOUR_LOCATIONIQ_API_KEY') {
+                    return await geocodeLocationIQ(address);
+                } else {
+                    throw new Error('Please configure LOCATIONIQ_API_KEY');
                 }
-                
-                const results = await response.json();
-                
-                if (results && results.length > 0) {
-                    return {
-                        lat: parseFloat(results[0].lat),
-                        lon: parseFloat(results[0].lon),
-                        usedFallback: false
-                    };
-                }
-                
-                // If original fails, try city/state/ZIP fallback
-                debugLog(`  └─ Original failed, trying city/state/ZIP fallback...`);
-                const fallbackAddress = extractCityStateZip(address);
-                
-                if (fallbackAddress !== address) {
-                    await new Promise(resolve => setTimeout(resolve, 1500)); // 1.5 second delay
-                    
-                    const fallbackUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(fallbackAddress)}&countrycodes=us&state=Michigan`;
-                    const fallbackResponse = await fetch(fallbackUrl, {
-                        headers: {
-                            'User-Agent': 'MichiganDentalCampaign/1.0 (Google Ads Targeting Map)',
-                            'Accept': 'application/json'
-                        }
-                    });
-                    
-                    if (!fallbackResponse.ok) {
-                        throw new Error(`Fallback HTTP ${fallbackResponse.status}`);
-                    }
-                    
-                    const fallbackResults = await fallbackResponse.json();
-                    
-                    if (fallbackResults && fallbackResults.length > 0) {
-                        debugLog(`  └─ Found using fallback: "${fallbackAddress}"`);
-                        return {
-                            lat: parseFloat(fallbackResults[0].lat),
-                            lon: parseFloat(fallbackResults[0].lon),
-                            usedFallback: true,
-                            fallbackAddress: fallbackAddress
-                        };
-                    }
-                }
-                
-                throw new Error('No geocoding results found for original or fallback address');
-                
             } catch (error) {
-                throw new Error(`Geocoding failed: ${error.message}`);
+                // If LocationIQ fails, you could add fallback to Geoapify here
+                throw error;
             }
         }
 
@@ -222,6 +234,14 @@
                 debugLog(`Found ${radiusTargets.length} radius targets`);
                 debugLog(`Found ${Object.keys(zipToCampaign).length} ZIP codes`);
 
+                // Check API key configuration
+                if (LOCATIONIQ_API_KEY === 'YOUR_LOCATIONIQ_API_KEY') {
+                    debugLog('⚠️ WARNING: API key not configured!');
+                    debugLog('Get free key at locationiq.com');
+                } else {
+                    debugLog('✓ API key configured');
+                }
+
                 // Generate colors for campaigns
                 const campaigns = [...new Set(campaignData.map(row => row.Campaign).filter(Boolean))];
                 const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9'];
@@ -229,22 +249,6 @@
                 campaigns.forEach((campaign, i) => {
                     campaignColors[campaign] = colors[i % colors.length];
                 });
-
-                // Sample Michigan ZIP GeoJSON (replace with your 20MB file)
-                const sampleZipData = {
-                    "type": "FeatureCollection",
-                    "features": [
-                        {
-                            "type": "Feature",
-                            "properties": {"ZCTA5CE10": "48083"},
-                            "geometry": {
-                                "type": "Polygon",
-                                "coordinates": [[[-83.2, 42.5], [-83.1, 42.5], [-83.1, 42.6], [-83.2, 42.6], [-83.2, 42.5]]]
-                            }
-                        }
-                        // This is just a sample - your real GeoJSON will have hundreds of ZIP polygons
-                    ]
-                };
 
                 // Style function for ZIP codes
                 function getStyle(feature) {
@@ -268,7 +272,7 @@
                     }
                 }
 
-                // Load GeoJSON and add radius circles
+                // Load GeoJSON file
                 try {
                     const geoResponse = await fetch('mi_michigan_zip_codes_geo.min.json');
                     if (geoResponse.ok) {
@@ -282,84 +286,69 @@
                             onEachFeature: onEachFeature
                         }).addTo(map);
                     } else {
-                        console.warn('GeoJSON file not found, using sample data');
-                        debugLog('GeoJSON not found, using sample data');
-                        // Use sample data if GeoJSON file doesn't exist
-                        L.geoJSON(sampleZipData, {
-                            style: getStyle,
-                            onEachFeature: onEachFeature
-                        }).addTo(map);
+                        debugLog('⚠️ GeoJSON file not found');
                     }
                 } catch (geoError) {
                     console.warn('Failed to load GeoJSON:', geoError);
-                    debugLog(`GeoJSON error: ${geoError.message}`);
-                    // Use sample data as fallback
-                    L.geoJSON(sampleZipData, {
-                        style: getStyle,
-                        onEachFeature: onEachFeature
-                    }).addTo(map);
+                    debugLog(`⚠️ GeoJSON error: ${geoError.message}`);
                 }
                 
-                // Add radius circles with proper Nominatim requests
-                debugLog(`Starting geocoding with city/state/ZIP fallbacks for ${radiusTargets.length} addresses...`);
-                
-                let successCount = 0;
-                let failCount = 0;
-                let fallbackCount = 0;
-                
-                // Process addresses with delay to avoid overwhelming the service
-                for (let i = 0; i < radiusTargets.length; i++) {
-                    const target = radiusTargets[i];
-                    debugLog(`Geocoding ${i + 1}/${radiusTargets.length}: ${target.address}`);
+                // Add radius circles
+                if (radiusTargets.length > 0) {
+                    debugLog(`Starting geocoding for ${radiusTargets.length} addresses...`);
                     
-                    try {
-                        const result = await geocodeWithProxy(target.address);
+                    let successCount = 0;
+                    let failCount = 0;
+                    
+                    for (let i = 0; i < radiusTargets.length; i++) {
+                        const target = radiusTargets[i];
+                        debugLog(`Geocoding ${i + 1}/${radiusTargets.length}: ${target.address}`);
                         
-                        // Add circle to map
-                        const circle = L.circle([result.lat, result.lon], {
-                            color: campaignColors[target.campaign],
-                            fillColor: campaignColors[target.campaign],
-                            fillOpacity: 0.3,
-                            radius: target.radius * 1609.34 // Convert miles to meters
-                        }).addTo(map);
-                        
-                        // Add popup with info about whether fallback was used
-                        const popupText = result.usedFallback 
-                            ? `<b>${target.campaign}</b><br>${target.radius} mile radius<br><small><i>Centered on: ${result.fallbackAddress}</i></small>`
-                            : `<b>${target.campaign}</b><br>${target.radius} mile radius<br>${target.address}`;
-                        
-                        circle.bindPopup(popupText);
-                        
-                        if (result.usedFallback) {
-                            debugLog(`✓ Success (fallback): ${target.address}`);
-                            fallbackCount++;
-                        } else {
+                        try {
+                            const result = await geocodeAddress(target.address);
+                            
+                            // Add circle to map
+                            const circle = L.circle([result.lat, result.lon], {
+                                color: campaignColors[target.campaign],
+                                fillColor: campaignColors[target.campaign],
+                                fillOpacity: 0.3,
+                                radius: target.radius * 1609.34 // Convert miles to meters
+                            }).addTo(map);
+                            
+                            // Add popup
+                            circle.bindPopup(`
+                                <b>${target.campaign}</b><br>
+                                ${target.radius} mile radius<br>
+                                ${target.address}<br>
+                                <small>${result.display_name}</small>
+                            `);
+                            
                             debugLog(`✓ Success: ${target.address}`);
+                            successCount++;
+                            
+                            // Rate limiting: LocationIQ free tier is 2 requests/second
+                            if (i < radiusTargets.length - 1) {
+                                await new Promise(resolve => setTimeout(resolve, 600)); // 600ms delay = ~1.5 req/sec
+                            }
+                            
+                        } catch (error) {
+                            debugLog(`✗ Failed: ${target.address} (${error.message})`);
+                            failCount++;
                         }
-                        successCount++;
-                        
-                        // Delay between requests to respect Nominatim's rate limit (1 request per second)
-                        if (i < radiusTargets.length - 1) {
-                            await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay
-                        }
-                        
-                    } catch (error) {
-                        debugLog(`✗ Failed: ${target.address} (${error.message})`);
-                        failCount++;
                     }
-                }
 
-                debugLog(`Geocoding complete! ✓${successCount} success (${fallbackCount} used city/state/ZIP), ✗${failCount} failed`);
+                    debugLog(`Geocoding complete! ✓${successCount} success, ✗${failCount} failed`);
+                }
 
                 // Create legend
                 const legend = L.control({position: 'topright'});
                 legend.onAdd = function() {
                     const div = L.DomUtil.create('div', 'legend');
-                    div.innerHTML = '<h4>Dental Campaigns</h4>';
+                    div.innerHTML = '<h4>Campaign Targeting</h4>';
                     campaigns.forEach(campaign => {
                         div.innerHTML += `<div class="legend-item">
                             <span class="legend-color" style="background: ${campaignColors[campaign]}"></span>
-                            ${campaign.replace('MCD-', '')}
+                            ${campaign.replace(/^[A-Z]+-/, '')}
                         </div>`;
                     });
                     return div;
@@ -369,10 +358,12 @@
                 // Hide loading indicator
                 document.getElementById('loading').style.display = 'none';
                 
-                // Hide debug info after 12 seconds
-                setTimeout(() => {
-                    document.getElementById('debug').style.display = 'none';
-                }, 12000);
+                // Auto-hide debug info after 15 seconds if successful
+                if (successCount > 0 || Object.keys(zipToCampaign).length > 0) {
+                    setTimeout(() => {
+                        document.getElementById('debug').style.display = 'none';
+                    }, 15000);
+                }
 
             } catch (error) {
                 console.error('Error initializing map:', error);
