@@ -123,12 +123,18 @@
             return address;
         }
 
-        // Function to geocode address using Nominatim directly with city/state/ZIP fallback
+        // Function to geocode address using Nominatim with proper headers
         async function geocodeWithProxy(address) {
             try {
-                // Try original address first with Michigan-specific search
+                // CRITICAL FIX: Add User-Agent header requirement for Nominatim
                 const nominatimUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&countrycodes=us&state=Michigan`;
-                const response = await fetch(nominatimUrl);
+                
+                const response = await fetch(nominatimUrl, {
+                    headers: {
+                        'User-Agent': 'MichiganDentalCampaign/1.0 (Google Ads Targeting Map)',
+                        'Accept': 'application/json'
+                    }
+                });
                 
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}`);
@@ -152,7 +158,12 @@
                     await new Promise(resolve => setTimeout(resolve, 1500)); // 1.5 second delay
                     
                     const fallbackUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(fallbackAddress)}&countrycodes=us&state=Michigan`;
-                    const fallbackResponse = await fetch(fallbackUrl);
+                    const fallbackResponse = await fetch(fallbackUrl, {
+                        headers: {
+                            'User-Agent': 'MichiganDentalCampaign/1.0 (Google Ads Targeting Map)',
+                            'Accept': 'application/json'
+                        }
+                    });
                     
                     if (!fallbackResponse.ok) {
                         throw new Error(`Fallback HTTP ${fallbackResponse.status}`);
@@ -178,28 +189,29 @@
             }
         }
 
-        // Function to process campaign data and create map
+        // Initialize map with data
         async function initializeMap() {
             try {
-                // Load campaign data from CSV
+                debugLog('Loading campaign data...');
                 const campaignData = await loadCampaignData();
-                console.log('Loaded campaign data:', campaignData.length, 'rows');
 
-                // Parse location data - handle both ZIP codes and radius targets
-                const zipToCampaign = {};
+                // Parse the data
                 const radiusTargets = [];
-                
+                const zipToCampaign = {};
+
                 campaignData.forEach(row => {
-                    if (row.Location && row.Location.includes('|mi|')) {
-                        // Parse radius format: "10.0|mi|1305 S Main St, Chelsea, MI 48118"
-                        const parts = row.Location.split('|mi|');
-                        const radius = parseFloat(parts[0]);
-                        const address = parts[1];
-                        radiusTargets.push({
-                            address: address,
-                            radius: radius,
-                            campaign: row.Campaign
-                        });
+                    if (row.Location && row.Location.includes('radius')) {
+                        // Radius targeting
+                        const match = row.Location.match(/(.*);(\d+)\s*mi\s*radius/);
+                        if (match) {
+                            const address = match[1].trim();
+                            const radius = parseInt(match[2]);
+                            radiusTargets.push({
+                                address: address,
+                                radius: radius,
+                                campaign: row.Campaign
+                            });
+                        }
                     } else if (row.Location) {
                         // Regular ZIP code
                         const zip = row.Location.split(',')[0];
@@ -288,7 +300,7 @@
                     }).addTo(map);
                 }
                 
-                // Add radius circles using AllOrigins CORS proxy with city/state/ZIP fallback
+                // Add radius circles with proper Nominatim requests
                 debugLog(`Starting geocoding with city/state/ZIP fallbacks for ${radiusTargets.length} addresses...`);
                 
                 let successCount = 0;
