@@ -241,6 +241,8 @@
 
         // Main geocoding function with multi-stage fallback
         async function geocodeAddressWithFallback(address) {
+            let lastError;
+            
             // Stage 1: Try full address
             try {
                 if (LOCATIONIQ_API_KEY && LOCATIONIQ_API_KEY !== 'YOUR_LOCATIONIQ_API_KEY') {
@@ -249,55 +251,62 @@
                     throw new Error('Please configure LOCATIONIQ_API_KEY');
                 }
             } catch (error) {
-                debugLog(`└─ Original failed, trying fallbacks...`);
-                
-                // Stage 2: Try extracting city/state/ZIP and geocoding that
-                const zipCode = extractZipCode(address);
-                if (zipCode) {
-                    try {
-                        // Try just the ZIP code with LocationIQ
-                        const zipResult = await geocodeLocationIQ(`${zipCode}, Michigan, United States`);
-                        debugLog(`└─ Found using ZIP code API: "${zipCode}"`);
-                        return {
-                            ...zipResult,
-                            fallbackMethod: 'zip_api'
-                        };
-                    } catch (zipApiError) {
-                        debugLog(`└─ ZIP API failed, trying GeoJSON centroid...`);
-                    }
-                }
-                
-                // Try to extract components for a simpler query
-                const parts = address.split(',').map(p => p.trim());
-                if (parts.length >= 2) {
-                    // Try city, state, ZIP
-                    const cityStateZip = parts.slice(-2).join(', ');
-                    try {
-                        const result = await geocodeLocationIQ(cityStateZip);
-                        debugLog(`└─ Found using fallback: "${cityStateZip}"`);
-                        return {
-                            ...result,
-                            fallbackMethod: 'city_state_zip'
-                        };
-                    } catch (fallbackError) {
-                        debugLog(`└─ City/state fallback failed`);
-                    }
-                }
-                
-                // Stage 3: Final fallback - use ZIP centroid from GeoJSON
-                if (zipCode) {
-                    const centroid = getZipCentroid(zipCode);
-                    if (centroid) {
-                        debugLog(`└─ Using ZIP centroid from GeoJSON: ${zipCode}`);
-                        return {
-                            ...centroid,
-                            fallbackMethod: 'zip_centroid'
-                        };
-                    }
-                }
-                
-                throw new Error(`Geocoding failed: ${error.message}`);
+                lastError = error;
+                debugLog(`└─ Stage 1 failed (${error.message}), trying fallbacks...`);
             }
+            
+            // Extract ZIP code for fallback attempts
+            const zipCode = extractZipCode(address);
+            
+            // Stage 2a: Try ZIP code with API
+            if (zipCode) {
+                try {
+                    await new Promise(resolve => setTimeout(resolve, 700)); // Add delay before retry
+                    const zipResult = await geocodeLocationIQ(`${zipCode}, Michigan, United States`);
+                    debugLog(`└─ ✓ Found using ZIP code API: "${zipCode}"`);
+                    return {
+                        ...zipResult,
+                        fallbackMethod: 'zip_api'
+                    };
+                } catch (zipApiError) {
+                    lastError = zipApiError;
+                    debugLog(`└─ Stage 2a failed (ZIP API), continuing...`);
+                }
+            }
+            
+            // Stage 2b: Try city/state/ZIP from address parts
+            const parts = address.split(',').map(p => p.trim());
+            if (parts.length >= 2) {
+                try {
+                    await new Promise(resolve => setTimeout(resolve, 700)); // Add delay before retry
+                    const cityStateZip = parts.slice(-2).join(', ');
+                    const result = await geocodeLocationIQ(cityStateZip);
+                    debugLog(`└─ ✓ Found using city/state: "${cityStateZip}"`);
+                    return {
+                        ...result,
+                        fallbackMethod: 'city_state_zip'
+                    };
+                } catch (fallbackError) {
+                    lastError = fallbackError;
+                    debugLog(`└─ Stage 2b failed (city/state), continuing...`);
+                }
+            }
+            
+            // Stage 3: Final fallback - use ZIP centroid from GeoJSON
+            if (zipCode) {
+                const centroid = getZipCentroid(zipCode);
+                if (centroid) {
+                    debugLog(`└─ ✓ Using ZIP centroid from GeoJSON: ${zipCode}`);
+                    return {
+                        ...centroid,
+                        fallbackMethod: 'zip_centroid'
+                    };
+                } else {
+                    debugLog(`└─ ZIP centroid not found in GeoJSON for ${zipCode}`);
+                }
+            }
+            
+            throw new Error(`All geocoding methods failed: ${lastError?.message || 'Unknown error'}`);
         }
 
         // Initialize map with data
@@ -408,9 +417,15 @@
                 // Add radius circles
                 let successCount = 0;
                 let failCount = 0;
+                let fallbackStats = {
+                    direct: 0,
+                    zip_api: 0,
+                    city_state_zip: 0,
+                    zip_centroid: 0
+                };
                 
                 if (radiusTargets.length > 0) {
-                    debugLog(`Starting geocoding with city/state/ZIP fallbacks for ${radiusTargets.length} addresses...`);
+                    debugLog(`Starting geocoding with multi-stage fallbacks for ${radiusTargets.length} addresses...`);
                     
                     for (let i = 0; i < radiusTargets.length; i++) {
                         const target = radiusTargets[i];
@@ -418,6 +433,13 @@
                         
                         try {
                             const result = await geocodeAddressWithFallback(target.address);
+                            
+                            // Track fallback method
+                            if (result.fallbackMethod) {
+                                fallbackStats[result.fallbackMethod]++;
+                            } else {
+                                fallbackStats.direct++;
+                            }
                             
                             // Add circle to map
                             const circle = L.circle([result.lat, result.lon], {
@@ -459,7 +481,8 @@
                         }
                     }
 
-                    debugLog(`Geocoding complete! ✓${successCount} success, ✗${failCount} failed`);
+                    const fallbackSummary = `(${fallbackStats.direct} direct, ${fallbackStats.zip_api} ZIP API, ${fallbackStats.city_state_zip} city/state, ${fallbackStats.zip_centroid} centroid)`;
+                    debugLog(`Geocoding complete! ✓${successCount} success ${fallbackSummary}, ✗${failCount} failed`);
                 }
 
                 // Create legend
