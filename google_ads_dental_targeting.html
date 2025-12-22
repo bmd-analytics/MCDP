@@ -253,6 +253,23 @@
             } catch (error) {
                 lastError = error;
                 debugLog(`└─ Stage 1 failed (${error.message}), trying fallbacks...`);
+                
+                // If we got a 408 timeout, skip API retries and go straight to ZIP centroid
+                if (error.message.includes('408')) {
+                    debugLog(`└─ Timeout detected, skipping API retries...`);
+                    const zipCode = extractZipCode(address);
+                    if (zipCode) {
+                        const centroid = getZipCentroid(zipCode);
+                        if (centroid) {
+                            debugLog(`└─ ✓ Using ZIP centroid from GeoJSON: ${zipCode}`);
+                            return {
+                                ...centroid,
+                                fallbackMethod: 'zip_centroid'
+                            };
+                        }
+                    }
+                    throw new Error(`Timeout and no ZIP centroid available: ${error.message}`);
+                }
             }
             
             // Extract ZIP code for fallback attempts
@@ -271,6 +288,19 @@
                 } catch (zipApiError) {
                     lastError = zipApiError;
                     debugLog(`└─ Stage 2a failed (ZIP API), continuing...`);
+                    
+                    // If timeout on retry, skip to centroid
+                    if (zipApiError.message.includes('408')) {
+                        debugLog(`└─ Timeout on ZIP API, using centroid...`);
+                        const centroid = getZipCentroid(zipCode);
+                        if (centroid) {
+                            debugLog(`└─ ✓ Using ZIP centroid from GeoJSON: ${zipCode}`);
+                            return {
+                                ...centroid,
+                                fallbackMethod: 'zip_centroid'
+                            };
+                        }
+                    }
                 }
             }
             
