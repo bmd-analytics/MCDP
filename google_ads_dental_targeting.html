@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Google Ads Campaign Targeting Map - Dental</title>
+    <title>Google Ads Campaign Targeting Map</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
@@ -49,21 +49,56 @@
             overflow-y: auto;
             z-index: 1000;
         }
+        .api-key-notice {
+            background: #fff3cd;
+            color: #856404;
+            padding: 10px;
+            border: 1px solid #ffeaa7;
+            border-radius: 5px;
+            margin-bottom: 10px;
+            font-size: 11px;
+        }
+        .api-key-notice a {
+            color: #0066cc;
+            text-decoration: underline;
+        }
     </style>
 </head>
 <body>
     <div id="loading" class="loading">Loading campaign data...</div>
-    <div id="debug" class="debug">Debug info will appear here...</div>
+    <div id="debug" class="debug">
+        <div class="api-key-notice">
+            <strong>Setup Required:</strong> Get your free API key at 
+            <a href="https://locationiq.com/" target="_blank">locationiq.com</a> 
+            (5,000 requests/day free) and replace 'YOUR_LOCATIONIQ_API_KEY' in the code.
+        </div>
+        Debug info will appear here...
+    </div>
     <div id="map"></div>
     
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
     <script>
+        // CONFIGURATION - Replace with your LocationIQ API key
+        // Get free key at: https://locationiq.com/ (5,000 requests/day free tier)
+        const LOCATIONIQ_API_KEY = 'pk.358098a68d38877064a347e670c88c90';
+        
+        // You can also use Geoapify (3,000/day free): https://www.geoapify.com/
+        // const GEOAPIFY_API_KEY = 'YOUR_GEOAPIFY_API_KEY';
+
+        // Global variable to store GeoJSON data for ZIP centroid fallback
+        let zipGeoData = null;
+
         // Debug function
         function debugLog(message) {
             console.log(message);
             const debugDiv = document.getElementById('debug');
-            debugDiv.innerHTML += message + '<br>';
+            const noticeDiv = debugDiv.querySelector('.api-key-notice');
+            if (noticeDiv) {
+                debugDiv.insertAdjacentHTML('beforeend', message + '<br>');
+            } else {
+                debugDiv.innerHTML += message + '<br>';
+            }
             debugDiv.scrollTop = debugDiv.scrollHeight;
         }
 
@@ -73,21 +108,25 @@
             attribution: '© OpenStreetMap contributors'
         }).addTo(map);
 
-        // Extract ZIP code from address
+        // Function to extract ZIP code from address
         function extractZipCode(address) {
             const zipMatch = address.match(/\b(\d{5})\b/);
             return zipMatch ? zipMatch[1] : null;
         }
 
-        // Get centroid coordinates for a ZIP code from GeoJSON
-        function getZipCentroid(zipCode, geoData) {
-            if (!geoData || !geoData.features) return null;
+        // Function to get centroid of ZIP code from GeoJSON
+        function getZipCentroid(zipCode) {
+            if (!zipGeoData || !zipGeoData.features) {
+                return null;
+            }
             
-            const feature = geoData.features.find(f => 
+            const feature = zipGeoData.features.find(f => 
                 f.properties.ZCTA5CE10 === zipCode
             );
             
-            if (!feature || !feature.geometry) return null;
+            if (!feature || !feature.geometry) {
+                return null;
+            }
             
             // Calculate centroid from polygon coordinates
             let totalLat = 0, totalLon = 0, pointCount = 0;
@@ -111,20 +150,21 @@
             if (pointCount > 0) {
                 return {
                     lat: totalLat / pointCount,
-                    lon: totalLon / pointCount
+                    lon: totalLon / pointCount,
+                    display_name: `ZIP ${zipCode} (centroid)`
                 };
             }
             
             return null;
         }
 
-        // Load and process CSV data
+        // Function to load and process CSV data
         async function loadCampaignData() {
             try {
-                debugLog('Loading CSV file...');
+                debugLog('Attempting to fetch CSV...');
                 const response = await fetch('google_ads_dental_targeting.csv');
                 if (!response.ok) {
-                    throw new Error(`Failed to load CSV: ${response.status}`);
+                    throw new Error(`Failed to load CSV: ${response.status} ${response.statusText}`);
                 }
                 
                 const csvText = await response.text();
@@ -134,11 +174,16 @@
                     Papa.parse(csvText, {
                         header: true,
                         skipEmptyLines: true,
-                        complete: (results) => {
+                        complete: function(results) {
+                            if (results.errors.length > 0) {
+                                console.warn('CSV parsing warnings:', results.errors);
+                            }
                             debugLog(`CSV parsed: ${results.data.length} rows`);
                             resolve(results.data);
                         },
-                        error: reject
+                        error: function(error) {
+                            reject(error);
+                        }
                     });
                 });
             } catch (error) {
@@ -147,35 +192,190 @@
             }
         }
 
-        // Initialize map
+        // Geocode using LocationIQ (CORS-friendly, 5000 requests/day free)
+        async function geocodeLocationIQ(address) {
+            const url = `https://us1.locationiq.com/v1/search.php?key=${LOCATIONIQ_API_KEY}&q=${encodeURIComponent(address)}&format=json&countrycodes=us&limit=1`;
+            
+            const response = await fetch(url);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            const results = await response.json();
+            
+            if (results && results.length > 0) {
+                return {
+                    lat: parseFloat(results[0].lat),
+                    lon: parseFloat(results[0].lon),
+                    display_name: results[0].display_name
+                };
+            }
+            
+            throw new Error('No results found');
+        }
+
+        // Alternative: Geocode using Geoapify (CORS-friendly, 3000 requests/day free)
+        async function geocodeGeoapify(address) {
+            const GEOAPIFY_API_KEY = 'YOUR_GEOAPIFY_API_KEY'; // Replace if using Geoapify
+            const url = `https://api.geoapify.com/v1/geocode/search?text=${encodeURIComponent(address)}&filter=countrycode:us&format=json&apiKey=${GEOAPIFY_API_KEY}`;
+            
+            const response = await fetch(url);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            const data = await response.json();
+            
+            if (data.results && data.results.length > 0) {
+                return {
+                    lat: data.results[0].lat,
+                    lon: data.results[0].lon,
+                    display_name: data.results[0].formatted
+                };
+            }
+            
+            throw new Error('No results found');
+        }
+
+        // Main geocoding function with multi-stage fallback
+        async function geocodeAddressWithFallback(address) {
+            let lastError;
+            
+            // Stage 1: Try full address
+            try {
+                if (LOCATIONIQ_API_KEY && LOCATIONIQ_API_KEY !== 'YOUR_LOCATIONIQ_API_KEY') {
+                    return await geocodeLocationIQ(address);
+                } else {
+                    throw new Error('Please configure LOCATIONIQ_API_KEY');
+                }
+            } catch (error) {
+                lastError = error;
+                debugLog(`└─ Stage 1 failed (${error.message}), trying fallbacks...`);
+                
+                // If we got a 408 timeout, skip API retries and go straight to ZIP centroid
+                if (error.message.includes('408')) {
+                    debugLog(`└─ Timeout detected, skipping API retries...`);
+                    const zipCode = extractZipCode(address);
+                    if (zipCode) {
+                        const centroid = getZipCentroid(zipCode);
+                        if (centroid) {
+                            debugLog(`└─ ✓ Using ZIP centroid from GeoJSON: ${zipCode}`);
+                            return {
+                                ...centroid,
+                                fallbackMethod: 'zip_centroid'
+                            };
+                        }
+                    }
+                    throw new Error(`Timeout and no ZIP centroid available: ${error.message}`);
+                }
+            }
+            
+            // Extract ZIP code for fallback attempts
+            const zipCode = extractZipCode(address);
+            
+            // Stage 2a: Try ZIP code with API
+            if (zipCode) {
+                try {
+                    await new Promise(resolve => setTimeout(resolve, 700)); // Add delay before retry
+                    const zipResult = await geocodeLocationIQ(`${zipCode}, Michigan, United States`);
+                    debugLog(`└─ ✓ Found using ZIP code API: "${zipCode}"`);
+                    return {
+                        ...zipResult,
+                        fallbackMethod: 'zip_api'
+                    };
+                } catch (zipApiError) {
+                    lastError = zipApiError;
+                    debugLog(`└─ Stage 2a failed (ZIP API), continuing...`);
+                    
+                    // If timeout on retry, skip to centroid
+                    if (zipApiError.message.includes('408')) {
+                        debugLog(`└─ Timeout on ZIP API, using centroid...`);
+                        const centroid = getZipCentroid(zipCode);
+                        if (centroid) {
+                            debugLog(`└─ ✓ Using ZIP centroid from GeoJSON: ${zipCode}`);
+                            return {
+                                ...centroid,
+                                fallbackMethod: 'zip_centroid'
+                            };
+                        }
+                    }
+                }
+            }
+            
+            // Stage 2b: Try city/state/ZIP from address parts
+            const parts = address.split(',').map(p => p.trim());
+            if (parts.length >= 2) {
+                try {
+                    await new Promise(resolve => setTimeout(resolve, 700)); // Add delay before retry
+                    const cityStateZip = parts.slice(-2).join(', ');
+                    const result = await geocodeLocationIQ(cityStateZip);
+                    debugLog(`└─ ✓ Found using city/state: "${cityStateZip}"`);
+                    return {
+                        ...result,
+                        fallbackMethod: 'city_state_zip'
+                    };
+                } catch (fallbackError) {
+                    lastError = fallbackError;
+                    debugLog(`└─ Stage 2b failed (city/state), continuing...`);
+                }
+            }
+            
+            // Stage 3: Final fallback - use ZIP centroid from GeoJSON
+            if (zipCode) {
+                const centroid = getZipCentroid(zipCode);
+                if (centroid) {
+                    debugLog(`└─ ✓ Using ZIP centroid from GeoJSON: ${zipCode}`);
+                    return {
+                        ...centroid,
+                        fallbackMethod: 'zip_centroid'
+                    };
+                } else {
+                    debugLog(`└─ ZIP centroid not found in GeoJSON for ${zipCode}`);
+                }
+            }
+            
+            throw new Error(`All geocoding methods failed: ${lastError?.message || 'Unknown error'}`);
+        }
+
+        // Initialize map with data
         async function initializeMap() {
             try {
+                debugLog('Loading campaign data...');
                 const campaignData = await loadCampaignData();
 
-                // Parse data
+                // Parse the data
                 const radiusTargets = [];
                 const zipToCampaign = {};
 
                 campaignData.forEach(row => {
                     if (row.Location && row.Location.includes('|mi|')) {
-                        // Radius targeting: "10.0|mi|address"
+                        // Radius targeting with pipe format: "10.0|mi|address"
                         const parts = row.Location.split('|mi|');
                         if (parts.length === 2) {
                             const radius = parseFloat(parts[0]);
                             const address = parts[1].trim();
-                            const zipCode = extractZipCode(address);
-                            
-                            if (zipCode) {
-                                radiusTargets.push({
-                                    address: address,
-                                    radius: radius,
-                                    campaign: row.Campaign,
-                                    zipCode: zipCode
-                                });
-                            }
+                            radiusTargets.push({
+                                address: address,
+                                radius: radius,
+                                campaign: row.Campaign
+                            });
+                        }
+                    } else if (row.Location && row.Location.includes('radius')) {
+                        // Legacy radius format: "address;10 mi radius"
+                        const match = row.Location.match(/(.*);(\d+)\s*mi\s*radius/);
+                        if (match) {
+                            const address = match[1].trim();
+                            const radius = parseInt(match[2]);
+                            radiusTargets.push({
+                                address: address,
+                                radius: radius,
+                                campaign: row.Campaign
+                            });
                         }
                     } else if (row.Location) {
-                        // Regular ZIP code targeting
+                        // Regular ZIP code
                         const zip = row.Location.split(',')[0];
                         zipToCampaign[zip] = row.Campaign;
                     }
@@ -183,6 +383,14 @@
 
                 debugLog(`Found ${radiusTargets.length} radius targets`);
                 debugLog(`Found ${Object.keys(zipToCampaign).length} ZIP codes`);
+
+                // Check API key configuration
+                if (LOCATIONIQ_API_KEY === 'YOUR_LOCATIONIQ_API_KEY') {
+                    debugLog('⚠️ WARNING: API key not configured!');
+                    debugLog('Get free key at locationiq.com');
+                } else {
+                    debugLog('✓ API key configured');
+                }
 
                 // Generate colors for campaigns
                 const campaigns = [...new Set(campaignData.map(row => row.Campaign).filter(Boolean))];
@@ -192,16 +400,7 @@
                     campaignColors[campaign] = colors[i % colors.length];
                 });
 
-                // Load GeoJSON
-                const geoResponse = await fetch('mi_michigan_zip_codes_geo.min.json');
-                if (!geoResponse.ok) {
-                    throw new Error('Failed to load GeoJSON');
-                }
-                
-                const geoData = await geoResponse.json();
-                debugLog(`GeoJSON loaded: ${geoData.features.length} features`);
-
-                // Style function for ZIP polygons
+                // Style function for ZIP codes
                 function getStyle(feature) {
                     const zip = feature.properties.ZCTA5CE10;
                     const campaign = zipToCampaign[zip];
@@ -214,7 +413,7 @@
                     };
                 }
 
-                // Add ZIP polygons
+                // Add ZIP polygons to map
                 function onEachFeature(feature, layer) {
                     const zip = feature.properties.ZCTA5CE10;
                     const campaign = zipToCampaign[zip];
@@ -223,42 +422,98 @@
                     }
                 }
 
-                L.geoJSON(geoData, {
-                    style: getStyle,
-                    onEachFeature: onEachFeature
-                }).addTo(map);
-
-                // Add radius circles using ZIP centroids
+                // Load GeoJSON file
+                try {
+                    const geoResponse = await fetch('mi_michigan_zip_codes_geo.min.json');
+                    if (geoResponse.ok) {
+                        const data = await geoResponse.json();
+                        zipGeoData = data; // Store for centroid fallback
+                        console.log('GeoJSON loaded, features:', data.features?.length);
+                        debugLog(`GeoJSON loaded: ${data.features?.length} features`);
+                        
+                        // Add ZIP polygons
+                        L.geoJSON(data, {
+                            style: getStyle,
+                            onEachFeature: onEachFeature
+                        }).addTo(map);
+                    } else {
+                        debugLog('⚠️ GeoJSON file not found');
+                    }
+                } catch (geoError) {
+                    console.warn('Failed to load GeoJSON:', geoError);
+                    debugLog(`⚠️ GeoJSON error: ${geoError.message}`);
+                }
+                
+                // Add radius circles
                 let successCount = 0;
                 let failCount = 0;
-
-                radiusTargets.forEach(target => {
-                    const centroid = getZipCentroid(target.zipCode, geoData);
+                let fallbackStats = {
+                    direct: 0,
+                    zip_api: 0,
+                    city_state_zip: 0,
+                    zip_centroid: 0
+                };
+                
+                if (radiusTargets.length > 0) {
+                    debugLog(`Starting geocoding with multi-stage fallbacks for ${radiusTargets.length} addresses...`);
                     
-                    if (centroid) {
-                        const circle = L.circle([centroid.lat, centroid.lon], {
-                            color: campaignColors[target.campaign],
-                            fillColor: campaignColors[target.campaign],
-                            fillOpacity: 0.3,
-                            radius: target.radius * 1609.34 // Convert miles to meters
-                        }).addTo(map);
+                    for (let i = 0; i < radiusTargets.length; i++) {
+                        const target = radiusTargets[i];
+                        debugLog(`Geocoding ${i + 1}/${radiusTargets.length}: ${target.address}`);
                         
-                        circle.bindPopup(`
-                            <b>${target.campaign}</b><br>
-                            ${target.radius} mile radius<br>
-                            ${target.address}<br>
-                            <small>Centered on ZIP ${target.zipCode}</small>
-                        `);
-                        
-                        debugLog(`✓ ${target.address} (ZIP ${target.zipCode})`);
-                        successCount++;
-                    } else {
-                        debugLog(`✗ ZIP ${target.zipCode} not found in GeoJSON`);
-                        failCount++;
+                        try {
+                            const result = await geocodeAddressWithFallback(target.address);
+                            
+                            // Track fallback method
+                            if (result.fallbackMethod) {
+                                fallbackStats[result.fallbackMethod]++;
+                            } else {
+                                fallbackStats.direct++;
+                            }
+                            
+                            // Add circle to map
+                            const circle = L.circle([result.lat, result.lon], {
+                                color: campaignColors[target.campaign],
+                                fillColor: campaignColors[target.campaign],
+                                fillOpacity: 0.3,
+                                radius: target.radius * 1609.34 // Convert miles to meters
+                            }).addTo(map);
+                            
+                            // Add popup with fallback method indicator
+                            let methodNote = '';
+                            if (result.fallbackMethod === 'city_state_zip') {
+                                methodNote = '<br><small style="color: orange;">⚠️ Using city/state fallback</small>';
+                            } else if (result.fallbackMethod === 'zip_api') {
+                                methodNote = '<br><small style="color: orange;">⚠️ Using ZIP code API</small>';
+                            } else if (result.fallbackMethod === 'zip_centroid') {
+                                methodNote = '<br><small style="color: orange;">⚠️ Using ZIP centroid</small>';
+                            }
+                            
+                            circle.bindPopup(`
+                                <b>${target.campaign}</b><br>
+                                ${target.radius} mile radius<br>
+                                ${target.address}<br>
+                                <small>${result.display_name}</small>
+                                ${methodNote}
+                            `);
+                            
+                            debugLog(`✓ Success: ${target.address}`);
+                            successCount++;
+                            
+                            // Rate limiting: LocationIQ free tier is 2 requests/second
+                            if (i < radiusTargets.length - 1) {
+                                await new Promise(resolve => setTimeout(resolve, 600)); // 600ms delay = ~1.5 req/sec
+                            }
+                            
+                        } catch (error) {
+                            debugLog(`✗ Failed: ${target.address} (${error.message})`);
+                            failCount++;
+                        }
                     }
-                });
 
-                debugLog(`Complete! ✓${successCount} success, ✗${failCount} failed`);
+                    const fallbackSummary = `(${fallbackStats.direct} direct, ${fallbackStats.zip_api} ZIP API, ${fallbackStats.city_state_zip} city/state, ${fallbackStats.zip_centroid} centroid)`;
+                    debugLog(`Geocoding complete! ✓${successCount} success ${fallbackSummary}, ✗${failCount} failed`);
+                }
 
                 // Create legend
                 const legend = L.control({position: 'topright'});
@@ -275,22 +530,24 @@
                 };
                 legend.addTo(map);
 
-                // Hide loading
+                // Hide loading indicator
                 document.getElementById('loading').style.display = 'none';
                 
-                // Auto-hide debug after 10 seconds
-                setTimeout(() => {
-                    document.getElementById('debug').style.display = 'none';
-                }, 10000);
+                // Auto-hide debug info after 15 seconds if successful
+                if (successCount > 0 || Object.keys(zipToCampaign).length > 0) {
+                    setTimeout(() => {
+                        document.getElementById('debug').style.display = 'none';
+                    }, 15000);
+                }
 
             } catch (error) {
-                console.error('Error:', error);
-                document.getElementById('loading').innerHTML = `Error: ${error.message}`;
+                console.error('Error initializing map:', error);
+                document.getElementById('loading').innerHTML = `Error loading data: ${error.message}`;
                 debugLog(`ERROR: ${error.message}`);
             }
         }
 
-        // Start
+        // Initialize the map when page loads
         initializeMap();
     </script>
 </body>
