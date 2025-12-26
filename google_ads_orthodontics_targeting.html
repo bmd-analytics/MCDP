@@ -394,7 +394,14 @@
 
                 // Generate colors for campaigns
                 const campaigns = [...new Set(campaignData.map(row => row.Campaign).filter(Boolean))];
-                const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9'];
+                const colors = [
+                    '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', 
+                    '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9',
+                    '#F39C12', '#E74C3C', '#9B59B6', '#3498DB', '#1ABC9C',
+                    '#2ECC71', '#F1C40F', '#E67E22', '#E91E63', '#00BCD4',
+                    '#FF5722', '#795548', '#607D8B', '#8BC34A', '#CDDC39',
+                    '#FFC107', '#FF9800', '#673AB7', '#9C27B0', '#03A9F4'
+                ];
                 const campaignColors = {};
                 campaigns.forEach((campaign, i) => {
                     campaignColors[campaign] = colors[i % colors.length];
