@@ -114,6 +114,108 @@
             return zipMatch ? zipMatch[1] : null;
         }
 
+        // Function to detect if location is a city name (not ZIP, not address with number)
+        function isCityLocation(location) {
+            if (!location) return false;
+            
+            // Check if it's a ZIP code format (starts with 5 digits)
+            if (/^\d{5}/.test(location)) return false;
+            
+            // Check if it's a radius format (contains "mi|" or "mi radius")
+            if (location.includes('mi|') || location.includes('mi radius')) return false;
+            
+            // Check if it has a street number (likely an address for radius targeting)
+            if (/^\d+\s/.test(location)) return false;
+            
+            // If it matches pattern: "City Name, State" or "City Name, State, Country"
+            // and doesn't have a ZIP code
+            const parts = location.split(',').map(p => p.trim());
+            if (parts.length >= 2 && !extractZipCode(location)) {
+                // Check if first part looks like a city name (letters, spaces, maybe Township/City)
+                const cityPart = parts[0];
+                return /^[A-Za-z\s]+(?:Township|City)?$/i.test(cityPart);
+            }
+            
+            return false;
+        }
+
+        // Function to geocode a city and find intersecting ZIP codes
+        async function getZipsForCity(cityLocation, campaign) {
+            debugLog(`Looking up ZIP codes for: ${cityLocation}`);
+            
+            try {
+                // First geocode the city to get its coordinates
+                const url = `https://us1.locationiq.com/v1/search?key=${LOCATIONIQ_API_KEY}&q=${encodeURIComponent(cityLocation)}&format=json&limit=1`;
+                const response = await fetch(url);
+                
+                if (!response.ok) {
+                    throw new Error(`Geocoding failed: ${response.status}`);
+                }
+                
+                const results = await response.json();
+                if (!results || results.length === 0) {
+                    throw new Error('No results found');
+                }
+                
+                const cityLat = parseFloat(results[0].lat);
+                const cityLon = parseFloat(results[0].lon);
+                const bbox = results[0].boundingbox; // [min_lat, max_lat, min_lon, max_lon]
+                
+                debugLog(`  Found: ${results[0].display_name}`);
+                
+                // Find all ZIP codes that intersect with this city's bounding box
+                const matchingZips = [];
+                
+                if (zipGeoData && zipGeoData.features) {
+                    zipGeoData.features.forEach(feature => {
+                        const zipCode = feature.properties.ZCTA5CE10;
+                        
+                        // Check if ZIP's centroid is within expanded bounding box
+                        let zipLat, zipLon;
+                        
+                        if (feature.geometry.type === 'Polygon') {
+                            // Calculate centroid
+                            let totalLat = 0, totalLon = 0, pointCount = 0;
+                            feature.geometry.coordinates[0].forEach(coord => {
+                                totalLon += coord[0];
+                                totalLat += coord[1];
+                                pointCount++;
+                            });
+                            zipLat = totalLat / pointCount;
+                            zipLon = totalLon / pointCount;
+                        } else if (feature.geometry.type === 'MultiPolygon') {
+                            // Use first polygon for centroid
+                            let totalLat = 0, totalLon = 0, pointCount = 0;
+                            feature.geometry.coordinates[0][0].forEach(coord => {
+                                totalLon += coord[0];
+                                totalLat += coord[1];
+                                pointCount++;
+                            });
+                            zipLat = totalLat / pointCount;
+                            zipLon = totalLon / pointCount;
+                        }
+                        
+                        // Check if ZIP centroid is within the city's bounding box (with small buffer)
+                        const buffer = 0.02; // ~2km buffer
+                        if (zipLat && zipLon &&
+                            zipLat >= parseFloat(bbox[0]) - buffer &&
+                            zipLat <= parseFloat(bbox[1]) + buffer &&
+                            zipLon >= parseFloat(bbox[2]) - buffer &&
+                            zipLon <= parseFloat(bbox[3]) + buffer) {
+                            matchingZips.push(zipCode);
+                        }
+                    });
+                }
+                
+                debugLog(`  Mapped to ${matchingZips.length} ZIP codes: ${matchingZips.join(', ')}`);
+                return matchingZips;
+                
+            } catch (error) {
+                debugLog(`  ✗ Failed to lookup ZIPs for ${cityLocation}: ${error.message}`);
+                return [];
+            }
+        }
+
         // Function to get centroid of ZIP code from GeoJSON
         function getZipCentroid(zipCode) {
             if (!zipGeoData || !zipGeoData.features) {
@@ -348,6 +450,7 @@
                 // Parse the data
                 const radiusTargets = [];
                 const zipToCampaign = {};
+                const cityTargets = [];
 
                 campaignData.forEach(row => {
                     if (row.Location && row.Location.includes('|mi|')) {
@@ -374,14 +477,23 @@
                                 campaign: row.Campaign
                             });
                         }
+                    } else if (row.Location && isCityLocation(row.Location)) {
+                        // City-based location: "Fenton, Michigan, United States"
+                        cityTargets.push({
+                            location: row.Location,
+                            campaign: row.Campaign
+                        });
                     } else if (row.Location) {
-                        // Regular ZIP code
+                        // Regular ZIP code: "48423, Michigan, United States"
                         const zip = row.Location.split(',')[0];
-                        zipToCampaign[zip] = row.Campaign;
+                        if (/^\d{5}$/.test(zip)) {
+                            zipToCampaign[zip] = row.Campaign;
+                        }
                     }
                 });
 
                 debugLog(`Found ${radiusTargets.length} radius targets`);
+                debugLog(`Found ${cityTargets.length} city targets`);
                 debugLog(`Found ${Object.keys(zipToCampaign).length} ZIP codes`);
 
                 // Check API key configuration
@@ -394,14 +506,7 @@
 
                 // Generate colors for campaigns
                 const campaigns = [...new Set(campaignData.map(row => row.Campaign).filter(Boolean))];
-                const colors = [
-                    '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', 
-                    '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9',
-                    '#F39C12', '#E74C3C', '#9B59B6', '#3498DB', '#1ABC9C',
-                    '#2ECC71', '#F1C40F', '#E67E22', '#E91E63', '#00BCD4',
-                    '#FF5722', '#795548', '#607D8B', '#8BC34A', '#CDDC39',
-                    '#FFC107', '#FF9800', '#673AB7', '#9C27B0', '#03A9F4'
-                ];
+                const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9'];
                 const campaignColors = {};
                 campaigns.forEach((campaign, i) => {
                     campaignColors[campaign] = colors[i % colors.length];
@@ -449,6 +554,50 @@
                 } catch (geoError) {
                     console.warn('Failed to load GeoJSON:', geoError);
                     debugLog(`⚠️ GeoJSON error: ${geoError.message}`);
+                }
+                
+                // Process city-based targets to find their ZIP codes
+                if (cityTargets.length > 0 && zipGeoData) {
+                    debugLog(`Processing ${cityTargets.length} city-based targets...`);
+                    
+                    for (const target of cityTargets) {
+                        const zips = await getZipsForCity(target.location, target.campaign);
+                        
+                        // Add each ZIP to the campaign mapping
+                        zips.forEach(zip => {
+                            // Don't overwrite existing ZIP assignments
+                            if (!zipToCampaign[zip]) {
+                                zipToCampaign[zip] = target.campaign;
+                            }
+                        });
+                        
+                        // Rate limiting
+                        await new Promise(resolve => setTimeout(resolve, 600));
+                    }
+                    
+                    // Redraw the map with updated ZIP assignments
+                    debugLog(`City processing complete. Redrawing map...`);
+                    
+                    // Remove old GeoJSON layer and add new one with updated colors
+                    map.eachLayer(layer => {
+                        if (layer.feature) {
+                            map.removeLayer(layer);
+                        }
+                    });
+                    
+                    // Re-add ZIP polygons with updated campaign assignments
+                    try {
+                        const geoResponse = await fetch('mi_michigan_zip_codes_geo.min.json');
+                        if (geoResponse.ok) {
+                            const data = await geoResponse.json();
+                            L.geoJSON(data, {
+                                style: getStyle,
+                                onEachFeature: onEachFeature
+                            }).addTo(map);
+                        }
+                    } catch (error) {
+                        debugLog(`⚠️ Error redrawing map: ${error.message}`);
+                    }
                 }
                 
                 // Add radius circles
